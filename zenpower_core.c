@@ -38,6 +38,7 @@
 #include <linux/hwmon.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <asm/processor.h>
 #include <asm/msr.h>
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
@@ -54,6 +55,15 @@ static u16 amd_pci_dev_to_node_id(struct pci_dev *pdev)
 	return PCI_SLOT(pdev->devfn) - AMD_NODE0_PCI_SLOT;
 }
 #endif
+
+static inline unsigned int cpuid_ecx(unsigned int op)
+{
+	unsigned int eax, ebx, ecx, edx;
+	__asm__ __volatile__("cpuid"
+	: "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+	: "a"(op));
+	return ecx;
+}
 
 MODULE_DESCRIPTION("AMD ZEN family CPU Sensors Driver");
 MODULE_AUTHOR("Anthony Wang");
