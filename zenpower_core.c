@@ -56,7 +56,7 @@ static u16 amd_pci_dev_to_node_id(struct pci_dev *pdev)
 }
 #endif
 
-static inline unsigned int cpuid_ecx(unsigned int op)
+static inline unsigned int zenpower_cpuid_ecx(unsigned int op)
 {
 	unsigned int eax, ebx, ecx, edx;
 	__asm__ __volatile__("cpuid"
@@ -193,7 +193,7 @@ static const struct zenpower_model_config model_configs[] = {
 	  .svi_soc_addr = F17H_M01H_SVI_TEL_PLANE1,
 	  .ccd_temp_base = F17H_M70H_CCD_TEMP_BASE,
 	  .num_ccds = 4,
-	  .flags = 0,
+	  .flags = ZEN_CFG_MULTINODE,
 	  .name = "Zen/Zen+ (17h/01h)" },
 
 	{ .family = 0x17, .model = 0x08,
@@ -201,7 +201,7 @@ static const struct zenpower_model_config model_configs[] = {
 	  .svi_soc_addr = F17H_M01H_SVI_TEL_PLANE1,
 	  .ccd_temp_base = F17H_M70H_CCD_TEMP_BASE,
 	  .num_ccds = 4,
-	  .flags = 0,
+	  .flags = ZEN_CFG_MULTINODE,
 	  .name = "Zen+ (17h/08h)" },
 
 	{ .family = 0x17, .model = 0x11,
@@ -766,7 +766,7 @@ static int zenpower_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	// CPUID_Fn8000001E_ECX [Node Identifiers] (Core::X86::Cpuid::NodeId)
 	// 10:8 NodesPerProcessor
-	data->nodes_per_cpu = 1 + ((cpuid_ecx(0x8000001E) >> 8) & 0b111);
+	data->nodes_per_cpu = 1 + ((zenpower_cpuid_ecx(0x8000001E) >> 8) & 0b111);
 	multinode = (data->nodes_per_cpu > 1);
 
 	node_of_cpu = data->node_id % data->nodes_per_cpu;
@@ -783,10 +783,11 @@ static int zenpower_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 		config = lookup_model_config(family, model);
 		if (!config) {
-			dev_err(dev, "Unsupported CPU family=%02xh model=%02xh\n",
-				family, model);
+			/* Unknown model: keep Tctl/Tdie, hide SVI2/RAPL sensors */
+			dev_warn(dev, "Unknown CPU family=%02xh model=%02xh, temperature only\n",
+				 family, model);
 			dev_info(dev, "Please report this CPU to zenpower developers\n");
-			return -ENODEV;
+			goto register_hwmon;
 		}
 
 		dev_info(dev, "Detected %s\n", config->name);
@@ -832,6 +833,10 @@ static int zenpower_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 				/* Node 1: Core telemetry only */
 				data->svi_core_addr = config->svi_core_addr;
 				data->svi_soc_addr = 0;
+			} else if (multinode) {
+				/* Nodes 2+ (4-node EPYC): no SVI2 telemetry */
+				data->svi_core_addr = 0;
+				data->svi_soc_addr = 0;
 			}
 		}
 
@@ -859,6 +864,7 @@ static int zenpower_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		}
 	}
 
+register_hwmon:
 	for (i = 0; i < ccd_check; i++) {
 		u32 ccd_addr = data->zen5 ? F1AH_M70H_CCD_TEMP(i) : F17H_M70H_CCD_TEMP(i);
 		data->read_amdsmn_addr(pdev, data->node_id, ccd_addr, &val);
