@@ -10,6 +10,7 @@
 #include <linux/pci.h>
 #include <linux/hwmon.h>
 #include <linux/ktime.h>
+#include <linux/mutex.h>
 
 /* CPU model configuration flags */
 #define ZEN_CFG_ZEN2_CALC    BIT(0)  /* Use Zen2+ current formula */
@@ -51,7 +52,9 @@ struct zenpower_data {
 	u64 rapl_prev_energy[2];
 	ktime_t rapl_prev_time[2];
 	bool rapl_available[2];
-	u32 rapl_energy_unit;
+	long rapl_last_power[2];
+	u32 rapl_energy_shift;	/* ESU: energy unit = 1/2^ESU Joules */
+	struct mutex rapl_lock;	/* protects rapl_prev_* and rapl_last_power */
 	bool rapl_initialized;
 };
 
@@ -65,7 +68,7 @@ int zenpower_rapl_init(struct zenpower_data *data, struct device *dev);
 int zenpower_rapl_read_power(struct zenpower_data *data, int channel, long *val);
 
 /* Temperature backend functions */
-unsigned int zenpower_temp_get_ccd(struct zenpower_data *data, u32 ccd_addr);
-unsigned int zenpower_temp_get_ctl(struct zenpower_data *data);
+int zenpower_temp_get_ccd(struct zenpower_data *data, u32 ccd_addr);
+int zenpower_temp_get_ctl(struct zenpower_data *data);
 
 #endif /* ZENPOWER_H */

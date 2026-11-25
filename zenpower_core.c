@@ -373,13 +373,13 @@ static ssize_t debug_data_show(struct device *dev,
 	struct zenpower_data *data = dev_get_drvdata(dev);
 	u32 smndata;
 
-	len += sprintf(buf + len, "KERN_SUP: %d\n", data->kernel_smn_support);
-	len += sprintf(buf + len, "NODE%d; CPU%d; ", data->node_id, data->cpu_id);
-	len += sprintf(buf + len, "N/CPU: %d\n", data->nodes_per_cpu);
+	len += scnprintf(buf + len, PAGE_SIZE - len, "KERN_SUP: %d\n", data->kernel_smn_support);
+	len += scnprintf(buf + len, PAGE_SIZE - len, "NODE%d; CPU%d; ", data->node_id, data->cpu_id);
+	len += scnprintf(buf + len, PAGE_SIZE - len, "N/CPU: %d\n", data->nodes_per_cpu);
 
 	for (i = 0; i < ARRAY_SIZE(debug_addrs_arr); i++){
 		data->read_amdsmn_addr(data->pdev, data->node_id, debug_addrs_arr[i], &smndata);
-		len += sprintf(buf + len, "%08x = %08x\n", debug_addrs_arr[i], smndata);
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%08x = %08x\n", debug_addrs_arr[i], smndata);
 	}
 
 	return len;
@@ -751,7 +751,11 @@ static int zenpower_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	for (i = 0; i < amd_nb_num(); i++) {
-		misc = node_to_amd_nb(i)->misc;
+		struct amd_northbridge *nb = node_to_amd_nb(i);
+
+		if (!nb || !nb->misc)
+			continue;
+		misc = nb->misc;
 		if (pdev->vendor == misc->vendor && pdev->device == misc->device) {
 			data->kernel_smn_support = true;
 			data->read_amdsmn_addr = kernel_smn_read;

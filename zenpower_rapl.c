@@ -31,8 +31,9 @@
 int zenpower_rapl_init(struct zenpower_data *data, struct device *dev)
 {
 	u64 val;
-	u32 energy_unit;
 	int err;
+
+	mutex_init(&data->rapl_lock);
 
 	/* Read RAPL power unit MSR (0xc0010299) */
 	err = zenpower_rdmsrq_safe(MSR_AMD_RAPL_POWER_UNIT, &val);
@@ -40,10 +41,7 @@ int zenpower_rapl_init(struct zenpower_data *data, struct device *dev)
 		return err;
 
 	/* Extract energy unit: ESU = 1/(2^energy_unit) Joules */
-	energy_unit = (val & RAPL_ENERGY_UNIT_MASK) >> RAPL_ENERGY_UNIT_SHIFT;
-
-	/* Convert to microjoules per count: (1/(2^ESU)) * 1000000 */
-	data->rapl_energy_unit = 1000000 >> energy_unit;
+	data->rapl_energy_shift = (val & RAPL_ENERGY_UNIT_MASK) >> RAPL_ENERGY_UNIT_SHIFT;
 
 	/* Read initial package energy (channel 0) */
 	err = zenpower_rdmsrq_safe(MSR_AMD_PKG_ENERGY_STATUS, &data->rapl_prev_energy[0]);
@@ -74,12 +72,15 @@ int zenpower_rapl_read_power(struct zenpower_data *data, int channel, long *val)
 {
 	u64 energy_now, energy_delta;
 	ktime_t time_now, time_delta_ns;
-	u32 time_delta_ms;
+	u64 time_delta_ms;
 	int err;
 	u32 msr;
 
 	if (!data->rapl_initialized)
 		return -EAGAIN;
+
+	/* Serialize: the previous-sample state is shared by all readers */
+	mutex_lock(&data->rapl_lock);
 
 	/* Select MSR based on channel: 0=package, 1=core */
 	msr = (channel == 0) ? MSR_AMD_PKG_ENERGY_STATUS :
@@ -87,31 +88,36 @@ int zenpower_rapl_read_power(struct zenpower_data *data, int channel, long *val)
 
 	err = zenpower_rdmsrq_safe(msr, &energy_now);
 	if (err)
-		return err;
+		goto out;
 
 	time_now = ktime_get();
-
-	/* Handle 32-bit counter rollover */
-	if (energy_now >= data->rapl_prev_energy[channel]) {
-		energy_delta = energy_now - data->rapl_prev_energy[channel];
-	} else {
-		/* Counter wrapped (32-bit counter in 64-bit register) */
-		energy_delta = (0x100000000ULL - data->rapl_prev_energy[channel]) +
-			       energy_now;
-	}
 
 	time_delta_ns = ktime_sub(time_now, data->rapl_prev_time[channel]);
 	time_delta_ms = ktime_to_ms(time_delta_ns);
 
-	if (time_delta_ms == 0)
-		return -EAGAIN;
+	/* Reads closer than 1 ms apart: report the previous value */
+	if (time_delta_ms == 0) {
+		*val = data->rapl_last_power[channel];
+		goto out;
+	}
 
-	/* Power (microwatts) = energy (microjoules) / time (milliseconds) * 1000 */
-	*val = (energy_delta * data->rapl_energy_unit * 1000) / time_delta_ms;
+	/* The energy counter is 32 bits wide; the subtraction handles wrap */
+	energy_delta = (u32)energy_now - (u32)data->rapl_prev_energy[channel];
+
+	/*
+	 * Power (uW) = energy (uJ) * 1000 / time (ms), where
+	 * energy (uJ) = counts * 1e6 / 2^ESU. Shift after scaling so the
+	 * unit is not truncated; counts * 1e9 fits in 64 bits (counts < 2^32).
+	 */
+	*val = (long)(((energy_delta * 1000000000ULL) >>
+		       data->rapl_energy_shift) / time_delta_ms);
 
 	/* Update state for next read */
 	data->rapl_prev_energy[channel] = energy_now;
 	data->rapl_prev_time[channel] = time_now;
+	data->rapl_last_power[channel] = *val;
 
-	return 0;
+out:
+	mutex_unlock(&data->rapl_lock);
+	return err;
 }
